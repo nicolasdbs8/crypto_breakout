@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Outputs / artifacts
+orders_today.csv
+live_state.json
+live_journal.csv
+*.log
+
+# Large data + generated outputs (on va les cacher en cache GitHub Actions)
+data/*.csv
+data/outputs/
+data/outputs/**
+
+# OS / editors
+.DS_Store
+.vscode/
