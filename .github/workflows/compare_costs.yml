@@ -1,0 +1,32 @@
+name: Compare S2 Costs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Update Kraken data
+        run: python update_data_kraken_recent.py
+
+      - name: Run cost comparison
+        run: python compare_s2_costs.py
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cost-compare
+          path: data/outputs/
