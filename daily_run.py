@@ -79,18 +79,21 @@ def _file_size(path: Path) -> int:
 
 
 def _orders_summary(root: Path) -> str:
-    orders_path = root / "orders_today.csv"
+    orders_path = root / "data" / "outputs" / "orders_today.csv"
+
     if not orders_path.exists():
-        return "orders_today.csv: MISSING"
+        return f"{orders_path.as_posix()} : MISSING"
+
     if _file_size(orders_path) == 0:
-        return "orders_today.csv: EMPTY (no orders)"
+        return f"{orders_path.as_posix()} : EMPTY (no orders)"
+
     try:
         lines = orders_path.read_text(encoding="utf-8").splitlines()
         n = max(0, len(lines) - 1)
         head = "\n".join(lines[: min(len(lines), 6)])
-        return f"orders_today.csv: {n} orders\nHEAD:\n{head}"
+        return f"{orders_path.as_posix()} : {n} orders\nHEAD:\n{head}"
     except Exception as e:
-        return f"orders_today.csv: present but unreadable ({type(e).__name__}: {e})"
+        return f"{orders_path.as_posix()} : unreadable ({type(e).__name__}: {e})"
 
 
 def main() -> None:
