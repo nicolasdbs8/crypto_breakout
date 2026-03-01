@@ -25,7 +25,9 @@ jobs:
 
       - name: Debug Coinbase file
         run: |
+          echo "=== Listing data_coinbase_long ==="
           ls -lah data_coinbase_long || true
+          echo "=== First lines BTC.csv ==="
           head -5 data_coinbase_long/BTC.csv || true
 
       - name: Analyze Macro Regime (LONG)
