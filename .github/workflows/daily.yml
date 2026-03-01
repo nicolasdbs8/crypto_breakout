@@ -46,6 +46,14 @@ jobs:
         run: |
           python -c "import data, inspect; print('data module path:', data.__file__); print('first lines:', ''.join(inspect.getsource(data).splitlines(True)[:40]))"
 
+      - name: Debug data folder headers
+        run: |
+          ls -lah data || true
+          for f in data/*.csv; do
+            echo "=== $f ==="
+            head -n 2 "$f" || true
+          done
+    
       - name: Run daily pipeline
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
