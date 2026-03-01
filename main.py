@@ -11,7 +11,7 @@ from paths import output_path_str
 
 # Baseline config (keep it explicit + conservative)
 INITIAL_CAPITAL = 3500.0
-RISK_PER_TRADE  = 0.0100
+RISK_PER_TRADE  = 0.0150
 FEE_TAKER       = 0.0026   # 0.26%
 SLIPPAGE        = 0.0020   # 0.20% per side
 
