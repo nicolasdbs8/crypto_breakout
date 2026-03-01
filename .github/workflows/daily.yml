@@ -1,3 +1,12 @@
+- name: Debug repo files
+  run: |
+    echo "PWD=$(pwd)"
+    ls -la
+    echo "---- daily_run.py head ----"
+    sed -n '1,120p' daily_run.py || true
+    echo "---- list data dir ----"
+    ls -la data || true
+
 name: Daily Paper Run
 
 on:
