@@ -23,5 +23,10 @@ jobs:
       - name: Fetch Coinbase BTC long
         run: python fetch_coinbase_btc_full.py
 
+      - name: Debug Coinbase file
+        run: |
+          ls -lah data_coinbase_long || true
+          head -5 data_coinbase_long/BTC.csv || true
+
       - name: Analyze Macro Regime (LONG)
         run: python analyze_macro_regime_kraken_long.py
