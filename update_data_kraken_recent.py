@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
 
 import ccxt
 import pandas as pd
@@ -14,14 +14,14 @@ import pandas as pd
 @dataclass
 class Pair:
     asset: str          # our internal name / filename e.g. "BTC"
-    ccxt_symbol: str    # e.g. "XBT/USDT"
+    ccxt_symbol: str    # e.g. "BTC/USDT"
 
 
 def _ms() -> int:
     return int(time.time() * 1000)
 
 
-def _fetch_ohlcv_all(exchange, symbol: str, timeframe: str, since_ms: int) -> List[List[float]]:
+def _fetch_ohlcv_all(exchange, symbol: str, timeframe: str, since_ms: int, limit: int = 720) -> List[List[float]]:
     """
     Fetch OHLCV in a loop until now.
     Returns list of [timestamp, open, high, low, close, volume]
@@ -31,30 +31,29 @@ def _fetch_ohlcv_all(exchange, symbol: str, timeframe: str, since_ms: int) -> Li
     since = since_ms
 
     while True:
-        rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=720)
+        rows = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
         if not rows:
             break
 
-        # append & advance
         all_rows.extend(rows)
         last_ts = rows[-1][0]
 
-        # if no progress -> stop
+        # if no progress -> stop (safety)
         if last_ts <= since:
             break
 
         since = last_ts + 1
 
-        # stop if we're basically up-to-date
+        # stop if we're basically up-to-date (within ~2 days)
         if last_ts >= now - 2 * 24 * 60 * 60 * 1000:
             break
 
         # be nice to API
         time.sleep(exchange.rateLimit / 1000)
 
-    # dedupe by timestamp
+    # dedupe by timestamp (keep first occurrence)
     seen = set()
-    dedup = []
+    dedup: List[List[float]] = []
     for r in all_rows:
         ts = r[0]
         if ts in seen:
@@ -68,8 +67,28 @@ def _to_df(rows: List[List[float]]) -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
     df["date"] = pd.to_datetime(df["ts"], unit="ms", utc=True).dt.date.astype(str)
     df = df.drop(columns=["ts"])
-    # reorder to match your loader expectation
+    # reorder to match loader expectation
     return df[["date", "open", "high", "low", "close", "volume"]]
+
+
+def _resolve_symbol(ex, asset: str, requested: str) -> Optional[str]:
+    """
+    Kraken symbols can vary depending on ccxt normalization / market structure.
+    We try a small set of candidates, especially for BTC.
+    """
+    candidates = [requested]
+
+    if asset.upper() == "BTC":
+        # common variants encountered in ccxt across exchanges / configs
+        # keep requested first, then fallbacks
+        for s in ["BTC/USDT", "XBT/USDT", "BTC/USDT:USDT", "XBT/USDT:USDT"]:
+            if s not in candidates:
+                candidates.append(s)
+
+    for s in candidates:
+        if s in ex.markets:
+            return s
+    return None
 
 
 def main():
@@ -82,7 +101,7 @@ def main():
     since_ms = _ms() - lookback_days * 24 * 60 * 60 * 1000
 
     pairs: List[Pair] = [
-        Pair("BTC", "XBT/USDT"),
+        Pair("BTC", "BTC/USDT"),   # you said you already corrected this
         Pair("ETH", "ETH/USDT"),
         Pair("SOL", "SOL/USDT"),
         Pair("BNB", "BNB/USDT"),
@@ -103,11 +122,15 @@ def main():
 
     for p in pairs:
         asset = p.asset
-        symbol = p.ccxt_symbol
+        requested = p.ccxt_symbol
         csv_path = out_dir / f"{asset}.csv"
 
-        if symbol not in ex.markets:
-            msg = f"SKIP (not on Kraken): {symbol}"
+        symbol = _resolve_symbol(ex, asset, requested)
+        if symbol is None:
+            msg = f"SKIP (not on Kraken): tried [{requested}]"
+            # include extra candidates for BTC in message
+            if asset.upper() == "BTC":
+                msg = f"SKIP (not on Kraken): tried [BTC/USDT, XBT/USDT, BTC/USDT:USDT, XBT/USDT:USDT]"
             print(f"{asset}: {msg}")
             summary.append({"asset": asset, "status": "SKIP", "detail": msg})
             continue
@@ -115,7 +138,7 @@ def main():
         try:
             rows = _fetch_ohlcv_all(ex, symbol, timeframe, since_ms)
             if not rows:
-                msg = "NO DATA returned"
+                msg = f"NO DATA returned for {symbol}"
                 print(f"{asset}: {msg}")
                 summary.append({"asset": asset, "status": "ERROR", "detail": msg})
                 continue
