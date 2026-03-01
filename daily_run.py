@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-STRATEGY_NAME = "s4_donchian_atr"
+STRATEGY_NAME = "s2_ma_trend"
 
 
 def run_step(cmd: list[str], title: str, required: bool) -> tuple[bool, str]:
