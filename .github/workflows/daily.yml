@@ -1,14 +1,13 @@
-name: Daily Paper Run
+name: Daily
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "15 0 * * *"  # 00:15 UTC (≈ 01:15 Paris hiver / 02:15 été)
-  workflow_dispatch: {}
+    - cron: "15 6 * * *"  # 06:15 UTC (ajuste si besoin)
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -24,28 +23,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Test Kraken connection
-        run: python kraken_test_connection.py
-        env:
-          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
-          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+      # 1) Update OHLCV from Kraken (USDC pairs)
+      - name: Update data (Kraken)
+        run: python update_data_kraken_recent.py
 
-      - name: Read Kraken balance
-        run: python kraken_account.py
-        env:
-          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
-          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
-
-      - name: Kraken preflight (NO TRADE)
-        run: python kraken_preflight.py
-        env:
-          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
-          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
-
-      - name: Debug which data.py is used
-        run: |
-          python -c "import data, inspect; print('data module path:', data.__file__); print('first lines:', ''.join(inspect.getsource(data).splitlines(True)[:40]))"
-
+      # (Optionnel mais utile) Debug data headers
       - name: Debug data folder headers
         run: |
           ls -lah data || true
@@ -53,20 +35,17 @@ jobs:
             echo "=== $f ==="
             head -n 2 "$f" || true
           done
-    
+
+      # 2) Run your existing daily pipeline (signals + orders_today.csv + paper + telegram)
       - name: Run daily pipeline
+        run: python daily_run.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python daily_run.py
 
-      - name: Upload outputs as artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: daily_outputs
-          path: |
-            data/outputs/analysis/daily/**
-            data/outputs/orders_today.csv
-            data/outputs/live_state.json
-            data/outputs/live_journal.csv
+      # 3) Kraken preflight (NO TRADE): checks orders_today.csv + Kraken markets + open orders
+      - name: Kraken preflight (NO TRADE)
+        run: python kraken_preflight.py
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
