@@ -7,11 +7,10 @@ import sys
 from pathlib import Path
 
 
+STRATEGY_NAME = "s4_donchian_atr"
+
+
 def run_step(cmd: list[str], title: str, required: bool) -> tuple[bool, str]:
-    """
-    Runs a command, returns (ok, combined_log).
-    If required=False, failure does NOT stop the pipeline immediately.
-    """
     print("\n" + "=" * 80)
     print(title)
     print("CMD:", " ".join(cmd))
@@ -27,73 +26,43 @@ def run_step(cmd: list[str], title: str, required: bool) -> tuple[bool, str]:
         print("\n[stderr]\n" + err)
 
     ok = (p.returncode == 0)
+
     if not ok:
         msg = f"FAILED (exit code {p.returncode})"
-        if required:
-            print(msg + " [REQUIRED]")
-        else:
-            print(msg + " [NON-FATAL]")
+        print(msg + (" [REQUIRED]" if required else " [NON-FATAL]"))
+
     return ok, "\n".join([x for x in [out, err] if x])
 
 
 def try_send_telegram(text: str) -> None:
-    """
-    Sends a Telegram message if secrets are present.
-    Never fails the pipeline if Telegram fails.
-    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
     if not token or not chat_id:
-        print("[telegram] missing TELEGRAM_BOT_TOKEN and/or TELEGRAM_CHAT_ID -> skip")
+        print("[telegram] missing secrets -> skip")
         return
 
     try:
         import requests
-    except Exception as e:
-        print(f"[telegram] requests not available ({e}) -> skip")
+    except Exception:
+        print("[telegram] requests not available -> skip")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": True,
-    }
 
     try:
-        r = requests.post(url, data=payload, timeout=15)
-        if r.status_code != 200:
-            print(f"[telegram] non-200 response: {r.status_code} body={r.text[:300]}")
-        else:
-            print("[telegram] sent OK")
+        requests.post(
+            url,
+            data={
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+        )
+        print("[telegram] sent OK")
     except Exception as e:
-        print(f"[telegram] send failed: {e}")
-
-
-def _file_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except Exception:
-        return 0
-
-
-def _orders_summary(root: Path) -> str:
-    orders_path = root / "data" / "outputs" / "orders_today.csv"
-
-    if not orders_path.exists():
-        return f"{orders_path.as_posix()} : MISSING"
-
-    if _file_size(orders_path) == 0:
-        return f"{orders_path.as_posix()} : EMPTY (no orders)"
-
-    try:
-        lines = orders_path.read_text(encoding="utf-8").splitlines()
-        n = max(0, len(lines) - 1)
-        head = "\n".join(lines[: min(len(lines), 6)])
-        return f"{orders_path.as_posix()} : {n} orders\nHEAD:\n{head}"
-    except Exception as e:
-        return f"{orders_path.as_posix()} : unreadable ({type(e).__name__}: {e})"
+        print(f"[telegram] failed: {e}")
 
 
 def main() -> None:
@@ -104,11 +73,11 @@ def main() -> None:
     ok_all_required = True
     notes: list[str] = []
 
-    # 0) UPDATE data
+    # 0) UPDATE DATA
     if in_actions:
         ok, _ = run_step(
-            [py, "-m", "python", "update_data_kraken_recent.py"] if False else [py, str(root / "update_data_kraken_recent.py")],
-            "0) UPDATE data (Kraken recent, CI-safe)",
+            [py, str(root / "update_data_kraken_recent.py")],
+            "0) UPDATE data",
             required=True,
         )
     else:
@@ -117,57 +86,78 @@ def main() -> None:
             "0) UPDATE data (local)",
             required=True,
         )
+
     ok_all_required &= ok
     if not ok:
-        notes.append("UPDATE data failed")
+        notes.append("UPDATE failed")
 
-    # 1) BACKTEST (required)
+    # 1) BACKTEST
     out_dir = root / "data" / "outputs" / "analysis" / "daily"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     ok_bt, _ = run_step(
         [
-            py, str(root / "main.py"),
-            "--strategy", "s2_ma_trend",
-            "--out_dir", str(out_dir),
+            py,
+            str(root / "main.py"),
+            "--strategy",
+            STRATEGY_NAME,
+            "--out_dir",
+            str(out_dir),
         ],
-        "1) BACKTEST (S2) -> data/outputs/analysis/daily",
+        f"1) BACKTEST ({STRATEGY_NAME})",
         required=True,
     )
+
     ok_all_required &= ok_bt
     if not ok_bt:
         notes.append("BACKTEST failed")
 
-    # 2) MAKE orders (non-fatal: we still want Telegram even if it crashes)
+    # 2) MAKE ORDERS
     if (root / "make_orders.py").exists():
-        ok_mo, _ = run_step([py, str(root / "make_orders.py")], "2) MAKE orders_today.csv", required=False)
+        ok_mo, _ = run_step(
+            [py, str(root / "make_orders.py")],
+            "2) MAKE orders",
+            required=False,
+        )
         if not ok_mo:
-            notes.append("MAKE_ORDERS failed (see logs)")
+            notes.append("MAKE_ORDERS failed")
     else:
-        notes.append("make_orders.py missing -> skipped")
+        notes.append("make_orders.py missing")
 
-    # 3) PAPER sim (non-fatal)
+    # 3) PAPER SIM
     if (root / "paper_sim.py").exists():
-        ok_ps, _ = run_step([py, str(root / "paper_sim.py")], "3) PAPER sim", required=False)
+        ok_ps, _ = run_step(
+            [py, str(root / "paper_sim.py")],
+            "3) PAPER sim",
+            required=False,
+        )
         if not ok_ps:
-            notes.append("PAPER_SIM failed (see logs)")
+            notes.append("PAPER_SIM failed")
     else:
-        notes.append("paper_sim.py missing -> skipped")
+        notes.append("paper_sim.py missing")
 
-    # Telegram summary (always attempt)
-    summary_lines = []
-    summary_lines.append("✅ Daily paper run finished")
-    summary_lines.append("Strategy: s2_ma_trend")
-    summary_lines.append("Out dir: data/outputs/analysis/daily")
-    summary_lines.append("")
-    summary_lines.append(_orders_summary(root))
+    # Telegram summary
+    summary = []
+    summary.append("✅ Daily paper run finished")
+    summary.append(f"Strategy: {STRATEGY_NAME}")
+    summary.append("")
+
+    orders_path = root / "data" / "outputs" / "orders_today.csv"
+
+    if orders_path.exists() and orders_path.stat().st_size > 0:
+        lines = orders_path.read_text(encoding="utf-8").splitlines()
+        n = max(0, len(lines) - 1)
+        summary.append(f"Orders today: {n}")
+    else:
+        summary.append("Orders today: 0")
+
     if notes:
-        summary_lines.append("")
-        summary_lines.append("⚠️ Notes:")
-        summary_lines.extend([f"- {n}" for n in notes])
+        summary.append("")
+        summary.append("⚠️ Notes:")
+        summary.extend(notes)
 
-    try_send_telegram("\n".join(summary_lines))
+    try_send_telegram("\n".join(summary))
 
-    # Fail the job only if required steps failed
     if not ok_all_required:
         raise SystemExit(1)
 
