@@ -32,8 +32,10 @@ def load_ohlcv_folder(folder: str) -> dict[str, pd.DataFrame]:
     data: dict[str, pd.DataFrame] = {}
 
     for file in sorted(folder_path.glob("*.csv")):
+        if file.stat().st_size == 0:
+        # skip empty csv files (can happen after failed fetch / partial run)
+        continue
         sym = file.stem.upper()
-
         df = pd.read_csv(file)
         df = _ensure_date_column(df)
 
