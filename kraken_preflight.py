@@ -32,10 +32,10 @@ def _read_orders_csv(path: Path) -> pd.DataFrame:
     return df
 
 def _kraken_pair(sym: str) -> str:
-    # Your engine symbols are like "ETH", "SOL" (from CSV stem.upper()).
-    # We trade spot vs USDC on Kraken: "ETH/USDC", etc.
     sym = sym.upper().strip()
-    return f"{sym}/{QUOTE}"
+    if sym == "BTC":
+        return "BTC/USDC"   # ccxt-unified, et on fera fallback si besoin plus tard
+    return f"{sym}/USDC"
 
 def main():
     ex = _connect()
