@@ -1,148 +1,182 @@
 # make_orders.py
+from __future__ import annotations
+
+import argparse
+import datetime as dt
 import json
 from pathlib import Path
+from typing import Dict, List, Tuple
+
 import pandas as pd
 
-from live_config import LiveConfig
 from data import load_ohlcv_folder
-from strategy import prepare_indicators, macro_filter, entry_signal, rank_score
+from live_config import load_live_config
+from strategy import build_strategy, macro_filter, prepare_indicators
 
 
-ORDER_COLS = ["date", "action", "symbol", "qty", "reason", "ref_date"]
+def _latest_common_date(dfs: Dict[str, pd.DataFrame]) -> str:
+    """
+    Daily bars. Use BTC as anchor (macro filter depends on BTC).
+    If BTC missing, fall back to the minimum of last available dates.
+    """
+    if "BTC" in dfs:
+        return str(dfs["BTC"]["date"].iloc[-1])
+
+    last_dates = [str(df["date"].iloc[-1]) for df in dfs.values() if len(df)]
+    if not last_dates:
+        raise ValueError("No data loaded.")
+    return min(last_dates)
 
 
-def _load_state(cfg: LiveConfig) -> dict:
-    p = Path(cfg.state_path)
-    if not p.exists():
-        return {"cash": cfg.initial_capital, "positions": {}, "last_date": None}
-    return json.loads(p.read_text(encoding="utf-8"))
+def _load_live_state(path: Path) -> dict:
+    if not path.exists():
+        return {"positions": {}, "cash": 0.0}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        # corrupted -> start fresh (paper_sim will rebuild)
+        return {"positions": {}, "cash": 0.0}
 
 
-def _save_state(cfg: LiveConfig, state: dict) -> None:
-    Path(cfg.state_path).write_text(json.dumps(state, indent=2), encoding="utf-8")
+def _write_orders(path: Path, rows: List[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        # create empty file (paper_sim handles "no orders" cleanly)
+        path.write_text("", encoding="utf-8")
+        return
+    pd.DataFrame(rows).to_csv(path, index=False)
 
 
-def _write_orders_csv(cfg: LiveConfig, orders: list[dict]) -> None:
-    df = pd.DataFrame(orders, columns=ORDER_COLS)  # ensures headers even if empty
-    df.to_csv(cfg.orders_path, index=False)
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--strategy",
+        default="s2_ma_trend",
+        help="strategy key: s1_breakout / s2_ma_trend / s3_tsmom",
+    )
+    ap.add_argument("--max_positions", type=int, default=None, help="override config max_positions")
+    ap.add_argument("--top_n", type=int, default=3, help="universe: keep top N by rank_score")
+    args = ap.parse_args()
 
+    cfg = load_live_config()
+    strat = build_strategy(args.strategy)
 
-def _pick_asof_date(data: dict, btc_symbol: str) -> pd.Timestamp:
-    btc_df = data[btc_symbol]
-    if len(btc_df.index) < 3:
-        raise ValueError("Not enough BTC rows.")
-    # last available close date used as ref_date (signals on ref close)
-    return pd.Timestamp(btc_df.index[-1])
+    # load daily OHLCV CSVs
+    data = load_ohlcv_folder("data/")
+    # indicators (adds SMA/ATR/mom/vol, etc.)
+    ind = prepare_indicators(data)
 
+    asof = _latest_common_date(ind)
+    btc = ind.get("BTC")
+    if btc is None:
+        raise KeyError("BTC data missing (needed for macro filter).")
 
-def main():
-    cfg = LiveConfig()
-    state = _load_state(cfg)
+    macro_on = bool(macro_filter(btc).iloc[-1])
+    state = _load_live_state(Path(cfg.state_path))
+    positions: Dict[str, dict] = state.get("positions", {}) or {}
 
-    data = load_ohlcv_folder(cfg.data_dir)
-    data = prepare_indicators(data)
+    def atr_ref(sym: str, date: str) -> float | None:
+        """
+        Provide ATR reference to paper_sim so it can size + set initial stop.
+        Column name is 'ATR20' in your indicator pipeline.
+        """
+        df = ind.get(sym)
+        if df is None:
+            return None
+        row = df.loc[df["date"] == date]
+        if row.empty:
+            return None
+        if "ATR20" not in row.columns:
+            return None
+        try:
+            return float(row["ATR20"].iloc[0])
+        except Exception:
+            return None
 
-    if cfg.btc_symbol not in data:
-        raise KeyError(f"Missing {cfg.btc_symbol} in data folder.")
+    orders: List[dict] = []
 
-    btc_df = data[cfg.btc_symbol]
-    macro = macro_filter(btc_df)
-
-    entries_raw = {sym: entry_signal(df) for sym, df in data.items()}
-    scores_raw = {sym: rank_score(df) for sym, df in data.items()}
-
-    asof = _pick_asof_date(data, cfg.btc_symbol)         # ref close date
-    next_day = asof + pd.Timedelta(days=1)               # intended execution date (next open proxy)
-
-    if asof not in macro.index:
-        raise ValueError("asof date missing in macro series.")
-
-    macro_on = bool(macro.loc[asof])
-
-    positions = state.get("positions", {}) or {}
-    orders: list[dict] = []
-
-    # A) Macro OFF -> exit all positions at next open
+    # 1) Exits first
     if not macro_on:
-        for sym, pos in positions.items():
-            orders.append({
-                "date": str(next_day.date()),
-                "action": "SELL",
-                "symbol": sym,
-                "qty": float(pos.get("qty", 0.0)),
-                "reason": "macro_off",
-                "ref_date": str(asof.date()),
-            })
-
-        _write_orders_csv(cfg, orders)
-        print(f"[make_orders] macro OFF asof={asof.date()} -> exits={len(orders)} -> {cfg.orders_path}")
-
-        state["last_date"] = str(asof.date())
-        _save_state(cfg, state)
+        for sym in sorted(positions.keys()):
+            orders.append(
+                {
+                    "date": dt.date.today().isoformat(),
+                    "action": "SELL",
+                    "symbol": sym,
+                    "ref_date": asof,
+                    "reason": "macro_off",
+                }
+            )
+        _write_orders(Path(cfg.orders_path), orders)
+        print(f"[make_orders] macro OFF asof={asof} -> exits={len(orders)} -> {cfg.orders_path}")
         return
 
-    # B) SMA100 exits at next open
-    for sym, pos in list(positions.items()):
-        if sym not in data or asof not in data[sym].index:
+    # macro ON -> strategy exits for open positions
+    for sym in sorted(positions.keys()):
+        df = ind.get(sym)
+        if df is None:
             continue
-        df = data[sym]
-        sma100 = df.loc[asof, "SMA100"] if "SMA100" in df.columns else None
-        close = float(df.loc[asof, "close"])
-        if sma100 is not None and sma100 == sma100 and close < float(sma100):
-            orders.append({
-                "date": str(next_day.date()),
-                "action": "SELL",
-                "symbol": sym,
-                "qty": float(pos.get("qty", 0.0)),
-                "reason": "exit_SMA100",
-                "ref_date": str(asof.date()),
-            })
+        exit_mask = strat.open_exit_mask(df)
+        if bool(exit_mask.iloc[-1]):
+            orders.append(
+                {
+                    "date": dt.date.today().isoformat(),
+                    "action": "SELL",
+                    "symbol": sym,
+                    "ref_date": asof,
+                    "reason": "exit_open",
+                }
+            )
 
-    # C) Rank top3 alts at asof
-    ranked = []
-    for sym, df in data.items():
-        if sym == cfg.btc_symbol:
+    # 2) Entries if slots remain
+    max_pos = args.max_positions if args.max_positions is not None else cfg.max_positions
+    open_syms = set(positions.keys())
+
+    exits_count = sum(o["action"] == "SELL" for o in orders)
+    effective_open = max(0, len(open_syms) - exits_count)
+    slots = max(0, int(max_pos) - effective_open)
+
+    if slots <= 0:
+        _write_orders(Path(cfg.orders_path), orders)
+        print(f"[make_orders] no entry slots (max_positions={max_pos}). Wrote exits={exits_count} -> {cfg.orders_path}")
+        return
+
+    # candidates: all assets except BTC
+    candidates: List[Tuple[str, float]] = []
+    for sym, df in ind.items():
+        if sym == "BTC":
             continue
-        if asof not in df.index:
+        if sym in open_syms:
+            continue  # no pyramiding for now
+
+        entry_mask = strat.entry_mask(df)
+        if not bool(entry_mask.iloc[-1]):
             continue
-        sc = scores_raw[sym].loc[asof]
-        if sc == sc:
-            ranked.append((sym, float(sc)))
-    ranked.sort(key=lambda x: x[1], reverse=True)
-    top3 = [s for s, _ in ranked[:3]]
 
-    held = set(positions.keys())
-    slots_free = max(0, cfg.max_positions - len(held))
+        score = float(strat.rank_score(df).iloc[-1])
+        candidates.append((sym, score))
 
-    # D) Entries at next open for signals true at asof close
-    if slots_free > 0:
-        for sym in top3:
-            if sym in held:
-                continue
-            if sym not in data or asof not in data[sym].index:
-                continue
-            if not bool(entries_raw[sym].loc[asof]):
-                continue
-            orders.append({
-                "date": str(next_day.date()),
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    picks = candidates[: max(0, min(args.top_n, len(candidates)))]
+
+    for sym, score in picks[:slots]:
+        ar = atr_ref(sym, asof)
+        orders.append(
+            {
+                "date": dt.date.today().isoformat(),
                 "action": "BUY",
                 "symbol": sym,
-                "qty": "",  # computed by execution layer (paper_sim / ccxt_exec)
-                "reason": "entry",
-                "ref_date": str(asof.date()),
-            })
-            slots_free -= 1
-            if slots_free <= 0:
-                break
+                "ref_date": asof,
+                "atr_ref": ar if ar is not None else "",
+                "reason": f"entry_{args.strategy}",
+                "score": score,
+            }
+        )
 
-    _write_orders_csv(cfg, orders)
-
-    state["last_date"] = str(asof.date())
-    _save_state(cfg, state)
-
-    print(f"[make_orders] asof={asof.date()} macro=ON top3={top3} orders={len(orders)} -> {cfg.orders_path}")
-    if orders:
-        print(pd.DataFrame(orders, columns=ORDER_COLS).to_string(index=False))
+    _write_orders(Path(cfg.orders_path), orders)
+    print(
+        f"[make_orders] macro ON asof={asof} -> exits={exits_count} entries={sum(o['action']=='BUY' for o in orders)} -> {cfg.orders_path}"
+    )
 
 
 if __name__ == "__main__":
