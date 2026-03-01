@@ -1,94 +1,69 @@
 import os
 import time
-import json
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
+
+import ccxt
 import pandas as pd
 
-KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
-
 OUT_DIR = os.environ.get("KRAKEN_OUT_DIR", "data_kraken_long")
-PAIR = "XBTUSD"       # Kraken uses XBT
-INTERVAL = 1440       # daily
-SLEEP_S = 0.35        # rate limit friendly
+OUT_PATH = os.path.join(OUT_DIR, "BTC.csv")
 
+SYMBOL = "XBT/USD"      # public data for research only
+TIMEFRAME = "1d"
+SLEEP_S = 0.35
 
-def http_get_json(url: str):
-    with urllib.request.urlopen(url) as resp:
-        raw = resp.read().decode("utf-8")
-    return json.loads(raw)
-
-
-def fetch_ohlc(pair: str, interval: int, since: int | None):
-    params = {"pair": pair, "interval": interval}
-    if since is not None:
-        params["since"] = int(since)
-    url = KRAKEN_OHLC_URL + "?" + urllib.parse.urlencode(params)
-    return http_get_json(url)
+START_DT = "2013-01-01"  # try to go as far back as available
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUT_DIR, "BTC.csv")
 
-    # Start from epoch (Kraken will return earliest available and paginate via "last")
-    since = 0
-    parts = []
-    last_seen = None
+    ex = ccxt.kraken({"enableRateLimit": True})
+    ex.load_markets()
 
-    print(f"Fetching Kraken OHLC {PAIR} interval={INTERVAL} ...")
+    since = ex.parse8601(f"{START_DT}T00:00:00Z")
+    all_rows = []
+    last_ts = None
+
+    print(f"Fetching Kraken {SYMBOL} {TIMEFRAME} since {START_DT} ...")
 
     while True:
-        payload = fetch_ohlc(PAIR, INTERVAL, since)
-        if payload.get("error"):
-            raise RuntimeError(f"Kraken error: {payload['error']}")
-
-        result = payload.get("result", {})
-        last = int(result.get("last"))
-        # Result key is not necessarily exactly PAIR; get the first non-"last" key
-        series_key = next(k for k in result.keys() if k != "last")
-        rows = result.get(series_key, [])
-
-        if not rows:
+        ohlcv = ex.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, since=since, limit=1000)
+        if not ohlcv:
             break
 
-        df = pd.DataFrame(rows, columns=[
-            "timestamp", "open", "high", "low", "close", "vwap", "volume", "count"
-        ])
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce").astype("int64")
-        df["date"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert(None)
+        all_rows.extend(ohlcv)
+        new_last = ohlcv[-1][0]
 
-        for c in ["open", "high", "low", "close", "volume"]:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+        # progress
+        last_date = datetime.fromtimestamp(new_last / 1000, tz=timezone.utc).date()
+        print("... last:", last_date, "rows_total:", len(all_rows))
 
-        df = df[["date", "open", "high", "low", "close", "volume"]].dropna()
-        parts.append(df)
-
-        if last_seen is not None and last <= last_seen:
+        # stop conditions
+        if last_ts is not None and new_last <= last_ts:
             break
-        last_seen = last
-        since = last  # paginate
+        last_ts = new_last
 
-        # stop if Kraken returns same last repeatedly or tiny increments
+        # move forward
+        since = new_last + 1
+
+        # if less than limit, likely reached end
+        if len(ohlcv) < 1000:
+            break
+
         time.sleep(SLEEP_S)
 
-        # safety: if last is "now-ish", next call often returns empty; loop will break
-        if len(df) < 10:
-            break
+    if not all_rows:
+        raise RuntimeError("No OHLCV data returned from Kraken via CCXT.")
 
-        # log progress occasionally
-        if len(parts) % 10 == 0:
-            print("... last date:", df["date"].iloc[-1].date(), "last cursor:", last)
+    df = pd.DataFrame(all_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["date"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
+    df = df[["date", "open", "high", "low", "close", "volume"]]
+    df = df.sort_values("date").drop_duplicates(subset=["date"])
 
-    if not parts:
-        raise RuntimeError("No data returned from Kraken.")
+    df.to_csv(OUT_PATH, index=False)
 
-    all_df = pd.concat(parts, ignore_index=True)
-    all_df = all_df.sort_values("date").drop_duplicates(subset=["date"])
-    all_df.to_csv(out_path, index=False)
-
-    print(f"Saved {out_path} rows={len(all_df)} range={all_df['date'].min().date()}→{all_df['date'].max().date()}")
+    print(f"Saved {OUT_PATH} rows={len(df)} range={df['date'].min().date()}→{df['date'].max().date()}")
 
 
 if __name__ == "__main__":
