@@ -58,3 +58,6 @@ jobs:
           LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
           MAX_NOTIONAL_PER_ORDER_USDC: "100"
           MAX_NOTIONAL_PER_DAY_USDC: "200"
+
+      - name: Analyze Macro Regime
+        run: python analyze_macro_regime.py
