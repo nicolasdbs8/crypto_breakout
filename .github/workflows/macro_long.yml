@@ -30,5 +30,10 @@ jobs:
           echo "=== First lines BTC.csv ==="
           head -5 data_coinbase_long/BTC.csv || true
 
+      - name: Debug research file
+        run: |
+          ls -lah data_research || true
+          head -5 data_research/BTC_USD_FULL.csv || true
+
       - name: Analyze Macro Regime (LONG)
         run: python analyze_macro_regime_kraken_long.py
