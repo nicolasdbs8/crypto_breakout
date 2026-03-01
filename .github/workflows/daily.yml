@@ -2,7 +2,7 @@ name: Daily Paper Run
 
 on:
   schedule:
-    - cron: "15 0 * * *" # 01:15 Paris (00:15 UTC) - ajuste si tu veux
+    - cron: "15 0 * * *"  # 00:15 UTC (≈ 01:15 Paris hiver / 02:15 été)
   workflow_dispatch: {}
 
 jobs:
@@ -24,26 +24,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Debug repo files
+      - name: Run daily pipeline
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "PWD=$(pwd)"
-          ls -la
-          echo "---- workflows ----"
-          ls -la .github/workflows || true
-          echo "---- daily_run.py head ----"
-          sed -n '1,160p' daily_run.py || true
-          echo "---- update_data_kraken_recent.py head ----"
-          sed -n '1,160p' update_data_kraken_recent.py || true
-          echo "---- list data dir ----"
-          ls -la data || true
-
-      - name: Run daily pipeline (CI-safe Kraken)
-        run: |
-          PYTHONPATH=. python update_data_kraken_recent.py
-          PYTHONPATH=. python main.py --strategy s2_ma_trend --out_dir data/outputs/analysis/daily
-          # optionnels: ne doivent jamais faire échouer le workflow
-          PYTHONPATH=. python make_orders.py || true
-          PYTHONPATH=. python paper_sim.py || true
+          python daily_run.py
 
       - name: Upload outputs as artifact
         uses: actions/upload-artifact@v4
@@ -51,6 +37,6 @@ jobs:
           name: daily_outputs
           path: |
             data/outputs/analysis/daily/**
-            orders_today.csv
-            live_state.json
-            live_journal.csv
+            data/outputs/orders_today.csv
+            data/outputs/live_state.json
+            data/outputs/live_journal.csv
