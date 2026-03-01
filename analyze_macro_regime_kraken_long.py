@@ -1,7 +1,7 @@
 import pandas as pd
 from strategy import prepare_indicators, macro_filter
 
-BTC_PATH = "data_kraken_long/BTC.csv"
+BTC_PATH = "data_coinbase_long/BTC.csv"
 
 def main():
     df = pd.read_csv(BTC_PATH)
