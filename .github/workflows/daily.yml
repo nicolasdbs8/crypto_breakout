@@ -49,3 +49,12 @@ jobs:
         env:
           KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+
+      - name: Kraken execute (DRY RUN unless LIVE_TRADING=1)
+        run: python kraken_execute.py
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+          LIVE_TRADING: ${{ secrets.LIVE_TRADING }}
+          MAX_NOTIONAL_PER_ORDER_USDC: "100"
+          MAX_NOTIONAL_PER_DAY_USDC: "200"
