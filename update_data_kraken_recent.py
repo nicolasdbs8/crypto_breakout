@@ -3,40 +3,23 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 import ccxt
 import pandas as pd
 
-DATA_DIR = Path("data")          # garde ton pipeline inchangé
+DATA_DIR = Path("data")
 TIMEFRAME = "1d"
 QUOTE = "USDC"
-
-# IMPORTANT: Kraken uses XBT for BTC
-SYMBOLS = {
-    "BTC": "XBT/USDC",
-    "ETH": "ETH/USDC",
-    "SOL": "SOL/USDC",
-    "BNB": "BNB/USDC",
-    "XRP": "XRP/USDC",
-    "ADA": "ADA/USDC",
-    "AVAX": "AVAX/USDC",
-    "LINK": "LINK/USDC",
-    "DOT": "DOT/USDC",
-    "LTC": "LTC/USDC",
-    "BCH": "BCH/USDC",
-    "ATOM": "ATOM/USDC",
-}
-
-# par défaut: ~2 ans. Tu peux monter si Kraken renvoie plus.
 LOOKBACK_DAYS_DEFAULT = 900
+
+# We always write CSV filenames by asset (BTC.csv, ETH.csv, etc.)
+ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK", "DOT", "LTC", "BCH", "ATOM"]
 
 
 def _kraken() -> ccxt.Exchange:
-    ex = ccxt.kraken({"enableRateLimit": True})
-    return ex
+    return ccxt.kraken({"enableRateLimit": True})
 
 
 def _read_existing_csv(path: Path) -> Optional[pd.DataFrame]:
@@ -45,6 +28,8 @@ def _read_existing_csv(path: Path) -> Optional[pd.DataFrame]:
     df = pd.read_csv(path)
     if "timestamp" not in df.columns:
         return None
+    df = df.dropna(subset=["timestamp"])
+    df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce").astype("Int64")
     df = df.dropna(subset=["timestamp"])
     df["timestamp"] = df["timestamp"].astype(int)
     df = df.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
@@ -58,33 +43,50 @@ def _write_csv(path: Path, df: pd.DataFrame) -> None:
 
 
 def _fetch_ohlcv_daily(ex: ccxt.Exchange, market: str, since_ms: int) -> pd.DataFrame:
-    # Kraken pagine, on boucle
     all_rows = []
     since = since_ms
+
     while True:
-        rows = ex.fetch_ohlcv(market, timeframe=TIMEFRAME, since=since, limit=720)  # 720 = safe
+        rows = ex.fetch_ohlcv(market, timeframe=TIMEFRAME, since=since, limit=720)
         if not rows:
             break
+
         all_rows.extend(rows)
         last_ts = rows[-1][0]
-        # avancer d'un jour pour éviter boucle infinie
         next_since = last_ts + 24 * 60 * 60 * 1000
         if next_since <= since:
             break
         since = next_since
-        # rate-limit gentle
+
         time.sleep(ex.rateLimit / 1000.0)
 
-        # stop si on a déjà "today" (Kraken renvoie parfois la bougie en cours)
-        # on garde tout, le dédoublonnage nettoie.
-
         if len(rows) < 10:
-            # fin probable
             break
 
     df = pd.DataFrame(all_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = df["timestamp"].astype(int)
     return df
+
+
+def _candidate_markets(asset: str) -> list[str]:
+    """
+    Kraken/ccxt symbol naming can vary (BTC vs XBT).
+    We try a small robust set of candidates.
+    """
+    asset = asset.upper().strip()
+
+    if asset == "BTC":
+        # Try ccxt-unified first (often BTC/USDC exists even if Kraken uses XBT internally)
+        return ["BTC/USDC", "XBT/USDC", "XXBT/USDC"]
+    else:
+        return [f"{asset}/{QUOTE}"]
+
+
+def _resolve_market(markets: dict, asset: str) -> Optional[str]:
+    for m in _candidate_markets(asset):
+        if m in markets:
+            return m
+    return None
 
 
 def main() -> None:
@@ -98,33 +100,27 @@ def main() -> None:
     ok = 0
     skipped = 0
 
-    for asset, market in SYMBOLS.items():
-        if market not in markets:
-            print(f"[SKIP] {asset}: market not found on Kraken: {market}")
+    for asset in ASSETS:
+        market = _resolve_market(markets, asset)
+        if market is None:
+            print(f"[SKIP] {asset}: no {asset}/{QUOTE} market found. Tried: {_candidate_markets(asset)}")
             skipped += 1
             continue
 
         out_path = DATA_DIR / f"{asset}.csv"
         existing = _read_existing_csv(out_path)
 
-        # incremental: repartir du dernier timestamp si présent
         since_use = since_ms
         if existing is not None and len(existing) > 0:
             last_ts = int(existing["timestamp"].iloc[-1])
-            # reprendre 5 jours avant pour sécurité (révisions/exchange)
             since_use = max(since_ms, last_ts - 5 * 24 * 60 * 60 * 1000)
 
         df_new = _fetch_ohlcv_daily(ex, market, since_use)
-
         if df_new.empty:
             print(f"[WARN] {asset}: no data returned for {market}")
             continue
 
-        if existing is None:
-            merged = df_new
-        else:
-            merged = pd.concat([existing, df_new], ignore_index=True)
-
+        merged = df_new if existing is None else pd.concat([existing, df_new], ignore_index=True)
         _write_csv(out_path, merged)
         print(f"[OK] {asset}: wrote {out_path} rows={len(merged)} (market={market})")
         ok += 1
