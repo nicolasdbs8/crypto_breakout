@@ -42,6 +42,10 @@ jobs:
           KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
 
+      - name: Debug which data.py is used
+        run: |
+          python -c "import data, inspect; print('data module path:', data.__file__); print('first lines:', ''.join(inspect.getsource(data).splitlines(True)[:40]))"
+
       - name: Run daily pipeline
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
