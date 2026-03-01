@@ -1,4 +1,4 @@
-name: Macro LONG (Kraken XBTUSD)
+name: Macro LONG (Coinbase BTCUSD)
 
 on:
   workflow_dispatch:
