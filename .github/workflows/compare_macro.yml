@@ -1,0 +1,36 @@
+name: Compare S2 Macro (Kraken vs Research)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Update Kraken data (recent)
+        run: python update_data_kraken_recent.py
+
+      - name: Debug research BTC file
+        run: |
+          ls -lah data_research || true
+          head -5 data_research/BTC_USD_FULL.csv || true
+
+      - name: Compare macro variants (S2)
+        run: python compare_s2_macro.py
+
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: macro-compare-s2
+          path: data/outputs/
