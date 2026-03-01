@@ -16,15 +16,33 @@ from strategy import build_strategy, macro_filter, prepare_indicators
 
 def _latest_common_date(dfs: Dict[str, pd.DataFrame]) -> str:
     """
-    Daily bars. Use BTC as anchor (macro filter depends on BTC).
-    If BTC missing, fall back to the minimum of last available dates.
+    Daily bars.
+    If 'date' column exists -> use it.
+    Otherwise assume the index is date-like.
+    BTC is used as anchor if present.
     """
-    if "BTC" in dfs:
-        return str(dfs["BTC"]["date"].iloc[-1])
 
-    last_dates = [str(df["date"].iloc[-1]) for df in dfs.values() if len(df)]
+    def extract_last_date(df: pd.DataFrame) -> str:
+        if "date" in df.columns:
+            return str(df["date"].iloc[-1])
+        # fallback: index
+        if len(df.index) == 0:
+            raise ValueError("Empty DataFrame")
+        return str(df.index[-1])
+
+    if "BTC" in dfs:
+        return extract_last_date(dfs["BTC"])
+
+    # fallback: min of last dates across assets
+    last_dates = []
+    for df in dfs.values():
+        if len(df) == 0:
+            continue
+        last_dates.append(extract_last_date(df))
+
     if not last_dates:
         raise ValueError("No data loaded.")
+
     return min(last_dates)
 
 
